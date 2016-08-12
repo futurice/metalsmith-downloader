@@ -3,6 +3,17 @@ var fs = require('fs-extra');
 var path = require('path');
 var request = require('request');
 
+function checkFileExists(filename) {
+  return new Promise(function(resolve, reject) {
+    fs.stat(filename, function(err, stats) {
+      if (err)
+        resolve(false);
+      else
+        resolve(stats.isFile());
+    });
+  });
+}
+
 function downloadFile(filename, url) {
   return new Promise(function(resolve, reject) {
     var dirname = path.dirname(filename);
@@ -71,32 +82,50 @@ function chmodFile(filename, mode) {
 }
 
 module.exports = function downloader(options) {
+  var incremental = options && options.incremental;
+
   return function(files, metalsmith, done) {
     var dest = metalsmith.destination();
 
+    var downloadableFiles = {};
+    Object.keys(files).forEach(function(filename) {
+      var file = files[filename];
+      if (!file || !file.contentsUrl)
+        return;
+
+      debug('Removing file ' + filename + ' from Metalsmith');
+      delete files[filename];
+
+      downloadableFiles[filename] = file;
+    });
+
     Promise.all(
-      Object.keys(files).map(function(filename) {
-        var file = files[filename];
-        if (!file || !file.contentsUrl)
-          return Promise.resolve();
-
-        debug('Removing file ' + filename + ' from Metalsmith');
-        delete files[filename];
-
-        debug('Downloading file ' + filename + ' from ' + file.contentsUrl);
+      Object.keys(downloadableFiles).map(function(filename) {
         var filepath = path.resolve(dest, filename);
-        return downloadFile(filepath, file.contentsUrl)
-          .then(function() {
-            if (file.mode) {
-              debug('Changing mode of file ' + filename);
-              return chmodFile(filename, file.mode);
+        var file = downloadableFiles[filename];
+        var contentsUrl = file.contentsUrl;
+
+        return checkFileExists(filepath)
+          .then(function(exists) {
+            if (incremental && exists) {
+              debug('File ' + filename + ' already exists, not downloading');
+              return Promise.resolve();
             }
-            return Promise.resolve();
-          })
-          .then(function() {
-            debug('File ' + filename + ' downloaded successfully');
-          }).catch(function(err) {
-            debug('Error downloading file ' + filename + ': ' + err);
+
+            debug('Downloading file ' + filename + ' from ' + contentsUrl);
+            return downloadFile(filepath, contentsUrl)
+              .then(function() {
+                if (file.mode) {
+                  debug('Changing mode of file ' + filename);
+                  return chmodFile(filename, file.mode);
+                }
+                return Promise.resolve();
+              })
+              .then(function() {
+                debug('File ' + filename + ' downloaded successfully');
+              }).catch(function(err) {
+                debug('Error downloading file ' + filename + ': ' + err);
+              });
           });
       })
     ).then(function() {
