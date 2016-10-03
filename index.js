@@ -81,8 +81,107 @@ function chmodFile(filename, mode) {
   });
 }
 
+function copyFile(src, dst) {
+  return new Promise(function(resolve, reject) {
+    var pipeError = null;
+    var inputStream = fs.createReadStream(src);
+    var outputStream = fs.createWriteStream(dst, {autoClose: true});
+
+    outputStream.on('close', outputCloseHandler);
+    outputStream.on('error', outputErrorHandler);
+    inputStream.pipe(outputStream);
+
+    function deleteAndReject() {
+      fs.unlink(dst, function(err) {
+        if (err)
+          debug('Error deleting file ' + dst + ': ' + err);
+        reject(pipeError);
+        pipeError = null;
+      });
+    }
+
+    function outputCloseHandler() {
+      outputStream = null;
+      if (pipeError) {
+        deleteAndReject();
+      } else {
+        resolve();
+      }
+    }
+
+    function outputErrorHandler(err) {
+      req.abort();
+      pipeError = err;
+      outputStream.close();
+    }
+  });
+}
+
+function fetchCached(files, filename, destDir, cacheDir) {
+  var filepath = path.resolve(cacheDir, filename);
+  var file = files[filename];
+  var contentsUrl = file.contentsUrl;
+
+  return checkFileExists(filepath)
+    .then(function(cached) {
+      if (cached) {
+        debug('File ' + filename + ' found in cache, not downloading');
+        return Promise.resolve();
+      }
+
+      debug('Downloading file ' + filename + ' from ' + contentsUrl);
+      return downloadFile(filepath, contentsUrl)
+        .then(function() {
+          if (file.mode) {
+            debug('Changing mode of file ' + filename);
+            return chmodFile(filename, file.mode);
+          }
+          return Promise.resolve();
+        })
+        .then(function() {
+          debug('File ' + filename + ' downloaded successfully');
+        }).catch(function(err) {
+          console.error('Error downloading file ' + filename + ':', err);
+        });
+    }).then(function() {
+      var destpath = path.resolve(destDir, filename);
+      debug('Copying ' + filepath + ' to ' + destpath);
+      return copyFile(filepath, destpath);
+    });
+}
+
+function fetchNonCached(files, filename, destDir) {
+  var filepath = path.resolve(destDir, filename);
+  var file = files[filename];
+  var contentsUrl = file.contentsUrl;
+
+  return checkFileExists(filepath)
+    .then(function(exists) {
+      if (incremental && exists) {
+        debug('File ' + filename + ' already exists, not downloading');
+        return Promise.resolve();
+      }
+
+      debug('Downloading file ' + filename + ' from ' + contentsUrl);
+      return downloadFile(filepath, contentsUrl)
+        .then(function() {
+          if (file.mode) {
+            debug('Changing mode of file ' + filename);
+            return chmodFile(filename, file.mode);
+          }
+          return Promise.resolve();
+        })
+        .then(function() {
+          debug('File ' + filename + ' downloaded successfully');
+        }).catch(function(err) {
+          console.error('Error downloading file ' + filename + ':', err);
+        });
+    });
+}
+
 module.exports = function downloader(options) {
   var incremental = options && options.incremental;
+  var cacheDir = options && options.cache;
 
   return function(files, metalsmith, done) {
     var dest = metalsmith.destination();
@@ -101,32 +200,10 @@ module.exports = function downloader(options) {
 
     Promise.all(
       Object.keys(downloadableFiles).map(function(filename) {
-        var filepath = path.resolve(dest, filename);
-        var file = downloadableFiles[filename];
-        var contentsUrl = file.contentsUrl;
-
-        return checkFileExists(filepath)
-          .then(function(exists) {
-            if (incremental && exists) {
-              debug('File ' + filename + ' already exists, not downloading');
-              return Promise.resolve();
-            }
-
-            debug('Downloading file ' + filename + ' from ' + contentsUrl);
-            return downloadFile(filepath, contentsUrl)
-              .then(function() {
-                if (file.mode) {
-                  debug('Changing mode of file ' + filename);
-                  return chmodFile(filename, file.mode);
-                }
-                return Promise.resolve();
-              })
-              .then(function() {
-                debug('File ' + filename + ' downloaded successfully');
-              }).catch(function(err) {
-                debug('Error downloading file ' + filename + ': ' + err);
-              });
-          });
+        if (cacheDir)
+          return fetchCached(downloadableFiles, filename, dest, cacheDir);
+        else
+          return fetchNonCached(downloadableFiles, filename, dest);
       })
     ).then(function() {
       done();
