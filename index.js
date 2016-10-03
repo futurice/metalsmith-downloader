@@ -83,37 +83,58 @@ function chmodFile(filename, mode) {
 
 function copyFile(src, dst) {
   return new Promise(function(resolve, reject) {
-    var pipeError = null;
-    var inputStream = fs.createReadStream(src);
-    var outputStream = fs.createWriteStream(dst, {autoClose: true});
+    var dirname = path.dirname(dst);
+    fs.mkdirs(dirname, function(err) {
+      if (err) return reject(err);
 
-    outputStream.on('close', outputCloseHandler);
-    outputStream.on('error', outputErrorHandler);
-    inputStream.pipe(outputStream);
+      var pipeError = null;
+      var inputStream = fs.createReadStream(src, {autoClose: true});
+      var outputStream = fs.createWriteStream(dst, {autoClose: true});
 
-    function deleteAndReject() {
-      fs.unlink(dst, function(err) {
-        if (err)
-          debug('Error deleting file ' + dst + ': ' + err);
-        reject(pipeError);
-        pipeError = null;
-      });
-    }
+      inputStream.on('close', inputCloseHandler);
+      inputStream.on('error', inputErrorHandler);
+      outputStream.on('close', outputCloseHandler);
+      outputStream.on('error', outputErrorHandler);
+      inputStream.pipe(outputStream);
 
-    function outputCloseHandler() {
-      outputStream = null;
-      if (pipeError) {
-        deleteAndReject();
-      } else {
-        resolve();
+      function deleteAndReject() {
+        fs.unlink(dst, function(err) {
+          if (err)
+            debug('Error deleting file ' + dst + ': ' + err);
+          reject(pipeError);
+          pipeError = null;
+        });
       }
-    }
 
-    function outputErrorHandler(err) {
-      req.abort();
-      pipeError = err;
-      outputStream.close();
-    }
+      function outputCloseHandler() {
+        outputStream = null;
+        if (pipeError) {
+          deleteAndReject();
+        } else {
+          resolve();
+        }
+      }
+
+      function outputErrorHandler(err) {
+        pipeError = err;
+        inputStream.close();
+        outputStream = null;
+      }
+
+      function inputCloseHandler() {
+        inputStream = null;
+      }
+
+      function inputErrorHandler(err) {
+        inputStream = null;
+        if (outputStream) {
+          pipeError = err;
+          outputStream.close();
+        } else {
+          reject(err);
+        }
+      };
+    });
   });
 }
 
