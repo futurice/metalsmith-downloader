@@ -87,53 +87,10 @@ function copyFile(src, dst) {
     fs.mkdirs(dirname, function(err) {
       if (err) return reject(err);
 
-      var pipeError = null;
-      var inputStream = fs.createReadStream(src, {autoClose: true});
-      var outputStream = fs.createWriteStream(dst, {autoClose: true});
-
-      inputStream.on('close', inputCloseHandler);
-      inputStream.on('error', inputErrorHandler);
-      outputStream.on('close', outputCloseHandler);
-      outputStream.on('error', outputErrorHandler);
-      inputStream.pipe(outputStream);
-
-      function deleteAndReject() {
-        fs.unlink(dst, function(err) {
-          if (err)
-            debug('Error deleting file ' + dst + ': ' + err);
-          reject(pipeError);
-          pipeError = null;
-        });
-      }
-
-      function outputCloseHandler() {
-        outputStream = null;
-        if (pipeError) {
-          deleteAndReject();
-        } else {
-          resolve();
-        }
-      }
-
-      function outputErrorHandler(err) {
-        pipeError = err;
-        inputStream.close();
-        outputStream = null;
-      }
-
-      function inputCloseHandler() {
-        inputStream = null;
-      }
-
-      function inputErrorHandler(err) {
-        inputStream = null;
-        if (outputStream) {
-          pipeError = err;
-          outputStream.close();
-        } else {
-          reject(err);
-        }
-      };
+      fs.copy(src, dst, function(err) {
+        if (err) return reject(err);
+        resolve();
+      })
     });
   });
 }
