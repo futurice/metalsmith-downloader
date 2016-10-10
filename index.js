@@ -81,8 +81,23 @@ function chmodFile(filename, mode) {
   });
 }
 
+function copyFile(src, dst) {
+  return new Promise(function(resolve, reject) {
+    var dirname = path.dirname(dst);
+    fs.mkdirs(dirname, function(err) {
+      if (err) return reject(err);
+
+      fs.copy(src, dst, function(err) {
+        if (err) return reject(err);
+        resolve();
+      })
+    });
+  });
+}
+
 module.exports = function downloader(options) {
   var incremental = options && options.incremental;
+  var cacheDir = options && options.cache;
 
   return function(files, metalsmith, done) {
     var dest = metalsmith.destination();
@@ -101,12 +116,17 @@ module.exports = function downloader(options) {
 
     Promise.all(
       Object.keys(downloadableFiles).map(function(filename) {
-        var filepath = path.resolve(dest, filename);
+        var filepath = path.resolve(cacheDir || dest, filename);
         var file = downloadableFiles[filename];
         var contentsUrl = file.contentsUrl;
 
         return checkFileExists(filepath)
           .then(function(exists) {
+            if (cacheDir && exists) {
+              debug('File ' + filename + ' found in cache, not downloading');
+              return Promise.resolve();
+            }
+
             if (incremental && exists) {
               debug('File ' + filename + ' already exists, not downloading');
               return Promise.resolve();
@@ -123,9 +143,17 @@ module.exports = function downloader(options) {
               })
               .then(function() {
                 debug('File ' + filename + ' downloaded successfully');
-              }).catch(function(err) {
-                debug('Error downloading file ' + filename + ': ' + err);
               });
+          }).then(function() {
+            if (!cacheDir)
+              return Promise.resolve();
+
+            var destpath = path.resolve(dest, filename);
+            debug('Copying ' + filepath + ' to ' + destpath);
+            // FIXME: Don't copy if destpath exists && incremental?
+            return copyFile(filepath, destpath);
+          }).catch(function(err) {
+            debug('Error downloading file ' + filename + ': ' + err);
           });
       })
     ).then(function() {
