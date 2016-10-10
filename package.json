@@ -1,6 +1,6 @@
 {
   "name": "metalsmith-downloader",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Download assets dynamically in your Metalsmith build",
   "main": "index.js",
   "scripts": {
