@@ -172,7 +172,7 @@ function createProcessFileWrapper(q, options) {
     retries = retries || 0;
 
     return function processFileWrapperInner(cb) {
-      if (retries >= maxRetries) {
+      if (retries > maxRetries) {
         return setTimeout(function() {
           cb(Error(`Number of retries exceeds ${maxRetries} on ${filename}`));
         });
@@ -208,7 +208,7 @@ module.exports = function downloader(options) {
         var file = files[filename];
         return file && file.contentsUrl;
       })
-      .map(function(filename) {
+      .forEach(function(filename) {
         var file = files[filename];
         delete files[filename];
         q.push(processFile(filename, file));
