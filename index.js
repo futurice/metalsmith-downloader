@@ -175,7 +175,7 @@ function createProcessFileWrapper(q, options) {
       if (retries > maxRetries) {
         return setTimeout(function() {
           cb(Error(`Number of retries exceeds ${maxRetries} on ${filename}`));
-        });
+        }, 0);
       }
 
       debug('Processing ' + filename);
