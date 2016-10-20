@@ -9,6 +9,7 @@
   "dependencies": {
     "debug": "^2.2.0",
     "fs-extra": "^0.30.0",
+    "queue": "^4.0.0",
     "request": "^2.74.0"
   },
   "devDependencies": {
