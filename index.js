@@ -23,14 +23,12 @@ var debug = require('debug')('metalsmith-downloader');
 var fs = require('fs-extra');
 var path = require('path');
 var request = require('request');
+var queue = require('queue');
 
 function checkFileExists(filename) {
   return new Promise(function(resolve, reject) {
     fs.stat(filename, function(err, stats) {
-      if (err)
-        resolve(false);
-      else
-        resolve(stats.isFile());
+      resolve(err ? false : stats.isFile());
     });
   });
 }
@@ -54,7 +52,7 @@ function downloadFile(filename, url) {
 
         function deleteAndReject() {
           fs.unlink(filename, function(err) {
-            if (err)
+            if (err)  // FIXME: Consider this as fatal error
               debug('Error deleting file ' + filename + ': ' + err);
             reject(pipeError);
             pipeError = null;
@@ -91,7 +89,8 @@ function downloadFile(filename, url) {
   });
 }
 
-function chmodFile(filename, mode) {
+function chmodFile (filename, mode) {
+  debug('Changing mode of file ' + filename);
   return new Promise(function(resolve, reject) {
     fs.chmod(filename, mode, function(err) {
       if (err)
@@ -116,71 +115,105 @@ function copyFile(src, dst) {
   });
 }
 
+function createProcessFile(options) {
+  var incremental = options.incremental;
+  var cacheDir = options.cache;
+  var dest = options.dest;
+
+  return function processFile(filename, file) {
+    var filepath = path.resolve(cacheDir || dest, filename);
+    var contentsUrl = file.contentsUrl;
+
+    return checkFileExists(filepath)
+      .then(function(exists) {
+        // NOTE: This won't work with retries unless we successfully remove the failed file
+        if (cacheDir && exists) {
+          debug('File ' + filename + ' found in cache, not downloading');
+          return Promise.resolve();
+        }
+
+        if (incremental && exists) {
+          debug('File ' + filename + ' already exists, not downloading');
+          return Promise.resolve();
+        }
+
+        debug('Downloading file ' + filename + ' from ' + contentsUrl);
+        return downloadFile(filepath, contentsUrl)
+          .then(function() {
+            if (file.mode) {
+              // FIXME: Shouldn't this affect filepath and not filename?
+              return chmodFile(filename, file.mode);
+            }
+
+            return Promise.resolve();
+          })
+          .then(function() {
+            debug('File ' + filename + ' downloaded successfully');
+          });
+      }).then(function() {
+        if (!cacheDir)
+          return Promise.resolve();
+
+        var destpath = path.resolve(dest, filename);
+        debug('Copying ' + filepath + ' to ' + destpath);
+        // FIXME: Don't copy if destpath exists && incremental?
+        return copyFile(filepath, destpath);
+      }).catch(function(err) {
+        debug('Error downloading file ' + filename + ': ' + err);
+      });
+  }
+}
+
+function createProcessFileWrapper(q, options) {
+  var processFile = createProcessFile(options);
+  var maxRetries = options.retries || 0;
+
+  return function processFileWrapper(filename, file, retries) {
+    retries = retries || 0;
+
+    return function processFileWrapperInner(cb) {
+      if (retries > maxRetries) {
+        return setTimeout(function() {
+          cb(Error(`Number of retries exceeds ${maxRetries} on ${filename}`));
+        }, 0);
+      }
+
+      debug('Processing ' + filename);
+
+      return processFile(filename, file)
+        .then(function() {
+          cb();
+        })
+        .catch(function() {
+          debug('Retrying ' + filename);
+          q.push(processFileWrapper(filename, file, retries + 1));
+          cb();
+        })
+    }
+  }
+}
+
 module.exports = function downloader(options) {
-  var incremental = options && options.incremental;
-  var cacheDir = options && options.cache;
 
   return function(files, metalsmith, done) {
-    var dest = metalsmith.destination();
-
-    var downloadableFiles = {};
-    Object.keys(files).forEach(function(filename) {
-      var file = files[filename];
-      if (!file || !file.contentsUrl)
-        return;
-
-      debug('Removing file ' + filename + ' from Metalsmith');
-      delete files[filename];
-
-      downloadableFiles[filename] = file;
+    var _options = Object.assign(options || {}, {
+      dest: metalsmith.destination()
     });
+    var q = queue({concurrency: _options.concurrency || Infinity});
 
-    Promise.all(
-      Object.keys(downloadableFiles).map(function(filename) {
-        var filepath = path.resolve(cacheDir || dest, filename);
-        var file = downloadableFiles[filename];
-        var contentsUrl = file.contentsUrl;
+    var processFile = createProcessFileWrapper(q, _options);
 
-        return checkFileExists(filepath)
-          .then(function(exists) {
-            if (cacheDir && exists) {
-              debug('File ' + filename + ' found in cache, not downloading');
-              return Promise.resolve();
-            }
-
-            if (incremental && exists) {
-              debug('File ' + filename + ' already exists, not downloading');
-              return Promise.resolve();
-            }
-
-            debug('Downloading file ' + filename + ' from ' + contentsUrl);
-            return downloadFile(filepath, contentsUrl)
-              .then(function() {
-                if (file.mode) {
-                  debug('Changing mode of file ' + filename);
-                  return chmodFile(filename, file.mode);
-                }
-                return Promise.resolve();
-              })
-              .then(function() {
-                debug('File ' + filename + ' downloaded successfully');
-              });
-          }).then(function() {
-            if (!cacheDir)
-              return Promise.resolve();
-
-            var destpath = path.resolve(dest, filename);
-            debug('Copying ' + filepath + ' to ' + destpath);
-            // FIXME: Don't copy if destpath exists && incremental?
-            return copyFile(filepath, destpath);
-          }).catch(function(err) {
-            debug('Error downloading file ' + filename + ': ' + err);
-          });
+    Object.keys(files)
+      .filter(function(filename) {
+        var file = files[filename];
+        return file && file.contentsUrl;
       })
-    ).then(function() {
-      done();
-    }).catch(function(err) {
-      done(err);
-    });
+      .forEach(function(filename) {
+        var file = files[filename];
+        delete files[filename];
+        q.push(processFile(filename, file));
+      });
+
+    q.start(done);
   };
 };
