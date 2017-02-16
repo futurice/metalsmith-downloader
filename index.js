@@ -23,6 +23,7 @@ var debug = require('debug')('metalsmith-downloader');
 var fs = require('fs-extra');
 var path = require('path');
 var request = require('request');
+var crypto = require('crypto');
 var queue = require('queue');
 
 function checkFileExists(filename) {
@@ -115,6 +116,12 @@ function copyFile(src, dst) {
   });
 }
 
+function sha1Hash(data) {
+  var hash = crypto.createHash('sha1');
+  hash.update(data);
+  return hash.digest('hex');
+}
+
 function createProcessFile(options) {
   var incremental = options.incremental;
   var cacheDir = options.cache;
@@ -123,6 +130,12 @@ function createProcessFile(options) {
   return function processFile(filename, file) {
     var filepath = path.resolve(cacheDir || dest, filename);
     var contentsUrl = file.contentsUrl;
+
+    if (cacheDir) {
+      // If we are using a cache dir we need to add a hash of source URL to path,
+      // otherwise we cannot detect if the source URL has changed at some point.
+      filepath = path.resolve(cacheDir, sha1Hash(contentsUrl), filename);
+    }
 
     return checkFileExists(filepath)
       .then(function(exists) {
@@ -141,8 +154,7 @@ function createProcessFile(options) {
         return downloadFile(filepath, contentsUrl)
           .then(function() {
             if (file.mode) {
-              // FIXME: Shouldn't this affect filepath and not filename?
-              return chmodFile(filename, file.mode);
+              return chmodFile(filepath, file.mode);
             }
 
             return Promise.resolve();
